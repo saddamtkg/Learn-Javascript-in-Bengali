@@ -202,15 +202,16 @@ function setupEditorEvents(editor, lineNumbers) {
             return;
         }
         
-        // 4. Auto-closing brackets/tags
-        if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-            const handled = handleAutoClosing(e);
+        // 4. Handle closing bracket skip FIRST (if user types closing bracket and next char is already that bracket, skip it)
+        // This must come before auto-closing to prevent duplicate brackets
+        if (!e.ctrlKey && !e.metaKey) {
+            const handled = handleClosingBracketSkip(e);
             if (handled) return;
         }
         
-        // 5. Handle closing bracket skip (if user types closing bracket and next char is already that bracket, skip it)
-        if (!e.ctrlKey && !e.metaKey) {
-            const handled = handleClosingBracketSkip(e);
+        // 5. Auto-closing brackets/tags (after skip check)
+        if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            const handled = handleAutoClosing(e);
             if (handled) return;
         }
         
@@ -624,15 +625,41 @@ function handleAutoClosing(e) {
     }
     
     // Handle HTML tag auto-closing (<div> -> </div>)
-    if (key === '<') {
-        // Check if it looks like we're starting an HTML tag (followed by letter)
-        const nextChar = textAfter.charAt(0);
-        if (/[a-zA-Z]/.test(nextChar)) {
-            // Don't auto-close HTML tags, let user type the tag name
+    if (key === '>') {
+        // Check if we're inside a string or comment (don't auto-close)
+        if (isInsideStringOrComment(textBefore, start)) {
             return false;
         }
-        // If it's just <, don't auto-close
-        return false;
+        
+        // Check if this is an opening HTML tag (e.g., <div>, <span>, etc.)
+        const tagMatch = textBefore.match(/<([a-zA-Z][a-zA-Z0-9]*)\s*[^>]*$/);
+        if (tagMatch) {
+            const tagName = tagMatch[1];
+            // Don't auto-close self-closing tags or closing tags
+            const selfClosingTags = ['br', 'hr', 'img', 'input', 'meta', 'link', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr'];
+            if (selfClosingTags.includes(tagName.toLowerCase())) {
+                return false; // Let normal > behavior happen
+            }
+            
+            // Check if this is already a closing tag (starts with </)
+            // Look for the tag position and check if there's </ before it
+            const tagStartPos = textBefore.lastIndexOf('<' + tagName);
+            if (tagStartPos > 0) {
+                const charBeforeTag = textBefore.substring(tagStartPos - 2, tagStartPos);
+                if (charBeforeTag === '</') {
+                    return false; // Already a closing tag, don't auto-close
+                }
+            }
+            
+            // Auto-close the tag
+            e.preventDefault();
+            const closingTag = `</${tagName}>`;
+            editor.value = textBefore + key + closingTag + textAfter;
+            editor.selectionStart = editor.selectionEnd = start + 1;
+            editorState.code = editor.value;
+            updateLineNumbers();
+            return true;
+        }
     }
     
     return false;
@@ -645,6 +672,7 @@ function handleClosingBracketSkip(e) {
     const start = editor.selectionStart;
     const end = editor.selectionEnd;
     const textAfter = editor.value.substring(end);
+    const textBefore = editor.value.substring(0, start);
     
     // Don't skip if there's a selection
     if (start !== end) return false;
@@ -656,7 +684,6 @@ function handleClosingBracketSkip(e) {
         // Check if next character is the same closing bracket
         if (textAfter.charAt(0) === key) {
             // Check if we're inside a string or comment (don't skip)
-            const textBefore = editor.value.substring(0, start);
             if (isInsideStringOrComment(textBefore, start)) {
                 return false;
             }
@@ -665,6 +692,25 @@ function handleClosingBracketSkip(e) {
             e.preventDefault();
             editor.selectionStart = editor.selectionEnd = start + 1;
             return true;
+        }
+    }
+    
+    // Handle HTML closing tag skip (</div> -> skip > if already there)
+    if (key === '>') {
+        // Check if we're inside a string or comment (don't skip)
+        if (isInsideStringOrComment(textBefore, start)) {
+            return false;
+        }
+        
+        // Check if we're typing a closing tag (</tagName>)
+        const closingTagMatch = textBefore.match(/<\/([a-zA-Z][a-zA-Z0-9]*)\s*$/);
+        if (closingTagMatch) {
+            // If next character is already >, skip it
+            if (textAfter.charAt(0) === '>') {
+                e.preventDefault();
+                editor.selectionStart = editor.selectionEnd = start + 1;
+                return true;
+            }
         }
     }
     
